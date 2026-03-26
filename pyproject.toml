@@ -7,7 +7,7 @@ name = "easy-wav2lip-macos"
 version = "0.1.0"
 description = "Easy-Wav2Lip for MacOS"
 readme = "README.md"
-requires-python = ">=3.10, <3.13"
+requires-python = ">=3.10, <3.11"
 authors = [
     { name = "anothermartz" },
 ]
@@ -30,6 +30,7 @@ dependencies = [
     "torchvision>=0.16.0",
     "tqdm",
     "pillow",
+    "requests",
 ]
 
 [project.scripts]
@@ -42,7 +43,8 @@ include = [
     "/checkpoints/",
     "/models/",
     "/gfpgan/",
-    "/config.ini"
+    "/config.ini",
+    "/degradations.py"
 ]
 exclude = [
     "/.venv/",
@@ -52,5 +54,12 @@ exclude = [
     "/.git/",
     "/.DS_Store",
     "/installed.txt",
-    "/requirements*.txt"
+    "/requirements*.txt",
+    "/leijun_*",
+    "/last_detected_face.pkl"
 ]
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true

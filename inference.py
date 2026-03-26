@@ -19,6 +19,20 @@ import math
 print("\rloading os          ", end="")
 import os
 
+print("\rloading sys         ", end="")
+import sys
+
+# Monkeypatch basicsr to avoid compatibility issues with newer torchvision
+try:
+    # Try to import local degradations first
+    import degradations
+    import basicsr.data
+    sys.modules['basicsr.data.degradations'] = degradations
+    import basicsr.utils
+    sys.modules['basicsr.utils.degradations'] = degradations
+except ImportError:
+    pass
+
 print("\rloading subprocess  ", end="")
 import subprocess
 
@@ -61,181 +75,18 @@ from easy_functions import load_model, g_colab
 print("\rimports loaded!     ")
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
-gpu_id = 0 if torch.cuda.is_available() else -1
+
+def get_device():
+    if torch.cuda.is_available():
+        return 'cuda', 0
+    if torch.backends.mps.is_available():
+        return 'mps', -1
+    return 'cpu', -1
+
+device, gpu_id = get_device()
 
 if device == 'cpu':
     print('Warning: No GPU detected so inference will be done on the CPU which is VERY SLOW!')
-parser = argparse.ArgumentParser(
-    description="Inference code to lip-sync videos in the wild using Wav2Lip models"
-)
-
-parser.add_argument(
-    "--checkpoint_path",
-    type=str,
-    help="Name of saved checkpoint to load weights from",
-    required=True,
-)
-
-parser.add_argument(
-    "--segmentation_path",
-    type=str,
-    default=os.path.join(ROOT_DIR, "checkpoints/face_segmentation.pth"),
-    help="Name of saved checkpoint of segmentation network",
-    required=False,
-)
-
-parser.add_argument(
-    "--face",
-    type=str,
-    help="Filepath of video/image that contains faces to use",
-    required=True,
-)
-parser.add_argument(
-    "--audio",
-    type=str,
-    help="Filepath of video/audio file to use as raw audio source",
-    required=True,
-)
-parser.add_argument(
-    "--outfile",
-    type=str,
-    help="Video path to save result. See default for an e.g.",
-    default="results/result_voice.mp4",
-)
-
-parser.add_argument(
-    "--static",
-    type=bool,
-    help="If True, then use only first video frame for inference",
-    default=False,
-)
-parser.add_argument(
-    "--fps",
-    type=float,
-    help="Can be specified only if input is a static image (default: 25)",
-    default=25.0,
-    required=False,
-)
-
-parser.add_argument(
-    "--pads",
-    nargs="+",
-    type=int,
-    default=[0, 10, 0, 0],
-    help="Padding (top, bottom, left, right). Please adjust to include chin at least",
-)
-
-parser.add_argument(
-    "--wav2lip_batch_size", type=int, help="Batch size for Wav2Lip model(s)", default=1
-)
-
-parser.add_argument(
-    "--out_height",
-    default=480,
-    type=int,
-    help="Output video height. Best results are obtained at 480 or 720",
-)
-
-parser.add_argument(
-    "--crop",
-    nargs="+",
-    type=int,
-    default=[0, -1, 0, -1],
-    help="Crop video to a smaller region (top, bottom, left, right). Applied after resize_factor and rotate arg. "
-    "Useful if multiple face present. -1 implies the value will be auto-inferred based on height, width",
-)
-
-parser.add_argument(
-    "--box",
-    nargs="+",
-    type=int,
-    default=[-1, -1, -1, -1],
-    help="Specify a constant bounding box for the face. Use only as a last resort if the face is not detected."
-    "Also, might work only if the face is not moving around much. Syntax: (top, bottom, left, right).",
-)
-
-parser.add_argument(
-    "--rotate",
-    default=False,
-    action="store_true",
-    help="Sometimes videos taken from a phone can be flipped 90deg. If true, will flip video right by 90deg."
-    "Use if you get a flipped result, despite feeding a normal looking video",
-)
-
-parser.add_argument(
-    "--nosmooth",
-    type=str,
-    default=False,
-    help="Prevent smoothing face detections over a short temporal window",
-)
-
-parser.add_argument(
-    "--no_seg",
-    default=False,
-    action="store_true",
-    help="Prevent using face segmentation",
-)
-
-parser.add_argument(
-    "--no_sr", default=False, action="store_true", help="Prevent using super resolution"
-)
-
-parser.add_argument(
-    "--sr_model",
-    type=str,
-    default="gfpgan",
-    help="Name of upscaler - gfpgan or RestoreFormer",
-    required=False,
-)
-
-parser.add_argument(
-    "--fullres",
-    default=3,
-    type=int,
-    help="used only to determine if full res is used so that no resizing needs to be done if so",
-)
-
-parser.add_argument(
-    "--debug_mask",
-    type=str,
-    default=False,
-    help="Makes background grayscale to see the mask better",
-)
-
-parser.add_argument(
-    "--preview_settings", type=str, default=False, help="Processes only one frame"
-)
-
-parser.add_argument(
-    "--mouth_tracking",
-    type=str,
-    default=False,
-    help="Tracks the mouth in every frame for the mask",
-)
-
-parser.add_argument(
-    "--mask_dilation",
-    default=150,
-    type=float,
-    help="size of mask around mouth",
-    required=False,
-)
-
-parser.add_argument(
-    "--mask_feathering",
-    default=151,
-    type=int,
-    help="amount of feathering of mask around mouth",
-    required=False,
-)
-
-parser.add_argument(
-    "--quality",
-    type=str,
-    help="Choose between Fast, Improved and Enhanced",
-    default="Fast",
-)
 
 predictor = None
 mouth_detector = None
@@ -243,18 +94,10 @@ mouth_detector = None
 # creating variables to prevent failing when a face isn't detected
 kernel = last_mask = x = y = w = h = None
 
-g_colab = g_colab()
+g_colab_val = g_colab()
 
 args = None
 preview_window = "Both"
-
-if not g_colab:
-  # Load the config file
-  config = configparser.ConfigParser()
-  config.read(os.path.join(ROOT_DIR, 'config.ini'))
-
-  # Get the value of the "preview_window" variable
-  preview_window = config.get('OPTIONS', 'preview_window')
 
 all_mouth_landmarks = []
 
@@ -583,17 +426,216 @@ def _load(checkpoint_path):
 
 
 def main():
-    global args
+    global args, preview_window
+    
+    parser = argparse.ArgumentParser(
+        description="Inference code to lip-sync videos in the wild using Wav2Lip models"
+    )
+
+    parser.add_argument(
+        "--checkpoint_path",
+        type=str,
+        help="Name of saved checkpoint to load weights from",
+        required=True,
+    )
+
+    parser.add_argument(
+        "--segmentation_path",
+        type=str,
+        default=os.path.join(ROOT_DIR, "checkpoints/face_segmentation.pth"),
+        help="Name of saved checkpoint of segmentation network",
+        required=False,
+    )
+
+    parser.add_argument(
+        "--face",
+        type=str,
+        help="Filepath of video/image that contains faces to use",
+        required=True,
+    )
+    parser.add_argument(
+        "--audio",
+        type=str,
+        help="Filepath of video/audio file to use as raw audio source",
+        required=True,
+    )
+    parser.add_argument(
+        "--outfile",
+        type=str,
+        help="Video path to save result. See default for an e.g.",
+        default="results/result_voice.mp4",
+    )
+
+    parser.add_argument(
+        "--static",
+        type=bool,
+        help="If True, then use only first video frame for inference",
+        default=False,
+    )
+    parser.add_argument(
+        "--fps",
+        type=float,
+        help="Can be specified only if input is a static image (default: 25)",
+        default=25.0,
+        required=False,
+    )
+
+    parser.add_argument(
+        "--pads",
+        nargs="+",
+        type=int,
+        default=[0, 10, 0, 0],
+        help="Padding (top, bottom, left, right). Please adjust to include chin at least",
+    )
+
+    parser.add_argument(
+        "--wav2lip_batch_size", type=int, help="Batch size for Wav2Lip model(s)", default=1
+    )
+
+    parser.add_argument(
+        "--out_height",
+        default=480,
+        type=int,
+        help="Output video height. Best results are obtained at 480 or 720",
+    )
+
+    parser.add_argument(
+        "--crop",
+        nargs="+",
+        type=int,
+        default=[0, -1, 0, -1],
+        help="Crop video to a smaller region (top, bottom, left, right). Applied after resize_factor and rotate arg. "
+        "Useful if multiple face present. -1 implies the value will be auto-inferred based on height, width",
+    )
+
+    parser.add_argument(
+        "--box",
+        nargs="+",
+        type=int,
+        default=[-1, -1, -1, -1],
+        help="Specify a constant bounding box for the face. Use only as a last resort if the face is not detected."
+        "Also, might work only if the face is not moving around much. Syntax: (top, bottom, left, right).",
+    )
+
+    parser.add_argument(
+        "--rotate",
+        default=False,
+        action="store_true",
+        help="Sometimes videos taken from a phone can be flipped 90deg. If true, will flip video right by 90deg."
+        "Use if you get a flipped result, despite feeding a normal looking video",
+    )
+
+    parser.add_argument(
+        "--nosmooth",
+        type=str,
+        default=False,
+        help="Prevent smoothing face detections over a short temporal window",
+    )
+
+    parser.add_argument(
+        "--no_seg",
+        default=False,
+        action="store_true",
+        help="Prevent using face segmentation",
+    )
+
+    parser.add_argument(
+        "--no_sr", default=False, action="store_true", help="Prevent using super resolution"
+    )
+
+    parser.add_argument(
+        "--sr_model",
+        type=str,
+        default="gfpgan",
+        help="Name of upscaler - gfpgan or RestoreFormer",
+        required=False,
+    )
+
+    parser.add_argument(
+        "--fullres",
+        default=3,
+        type=int,
+        help="used only to determine if full res is used so that no resizing needs to be done if so",
+    )
+
+    parser.add_argument(
+        "--debug_mask",
+        type=str,
+        default=False,
+        help="Makes background grayscale to see the mask better",
+    )
+
+    parser.add_argument(
+        "--preview_settings", type=str, default=False, help="Processes only one frame"
+    )
+
+    parser.add_argument(
+        "--mouth_tracking",
+        type=str,
+        default=False,
+        help="Tracks the mouth in every frame for the mask",
+    )
+
+    parser.add_argument(
+        "--mask_dilation",
+        default=150,
+        type=float,
+        help="size of mask around mouth",
+        required=False,
+    )
+
+    parser.add_argument(
+        "--mask_feathering",
+        default=151,
+        type=int,
+        help="amount of feathering of mask around mouth",
+        required=False,
+    )
+
+    parser.add_argument(
+        "--quality",
+        type=str,
+        help="Choose between Fast, Improved and Enhanced",
+        default="Fast",
+    )
+
     args = parser.parse_args()
+
+    # Resolve checkpoint_path
+    checkpoint_path = args.checkpoint_path
+    if not os.path.exists(checkpoint_path):
+        # Try relative to ROOT_DIR/checkpoints
+        fallback_path = os.path.join(ROOT_DIR, "checkpoints", os.path.basename(checkpoint_path))
+        if os.path.exists(fallback_path):
+            checkpoint_path = fallback_path
+        else:
+            fallback_path2 = os.path.join(ROOT_DIR, "checkpoints", checkpoint_path)
+            if os.path.exists(fallback_path2):
+                checkpoint_path = fallback_path2
+
+    if not os.path.exists(checkpoint_path):
+        print(f"Error: Checkpoint file not found: {args.checkpoint_path}")
+        sys.exit(1)
 
     # Ensure temp and results directories exist
     os.makedirs("temp", exist_ok=True)
-    os.makedirs(os.path.dirname(args.outfile) or "results", exist_ok=True)
+    out_dir = os.path.dirname(args.outfile)
+    if out_dir and not os.path.exists(out_dir):
+        os.makedirs(out_dir, exist_ok=True)
 
-    do_load(args.checkpoint_path)
+    if not g_colab_val:
+        # Load the config file
+        config = configparser.ConfigParser()
+        config_path = os.path.join(ROOT_DIR, 'config.ini')
+        if os.path.exists(config_path):
+            config.read(config_path)
+            # Get the value of the "preview_window" variable
+            if config.has_section('OPTIONS'):
+                preview_window = config.get('OPTIONS', 'preview_window')
+
+    do_load(checkpoint_path)
 
     args.img_size = 96
-    frame_number = 11
 
     if os.path.isfile(args.face) and args.face.split(".")[1] in ["jpg", "png", "jpeg"]:
         args.static = True
@@ -625,7 +667,7 @@ def main():
                 )
 
             if args.rotate:
-                frame = cv2.rotate(frame, cv2.cv2.ROTATE_90_CLOCKWISE)
+                frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
 
             y1, y2, x1, x2 = args.crop
             if x2 == -1:
@@ -684,6 +726,7 @@ def main():
     else:
         gen = datagen(full_frames.copy(), mel_chunks)
 
+    run_params = None
     for i, (img_batch, mel_batch, frames, coords) in enumerate(
         tqdm(
             gen,
@@ -739,7 +782,7 @@ def main():
 
             f[y1:y2, x1:x2] = p
 
-            if not g_colab:
+            if not g_colab_val:
                 # Display the frame
                 if preview_window == "Face":
                     cv2.imshow("face preview - press Q to abort", p)
@@ -755,7 +798,7 @@ def main():
 
             if str(args.preview_settings) == "True":
                 cv2.imwrite("temp/preview.jpg", f)
-                if not g_colab:
+                if not g_colab_val:
                     cv2.imshow("preview - press Q to close", f)
                     if cv2.waitKey(-1) & 0xFF == ord('q'):
                         exit()  # Exit the loop when 'Q' is pressed
