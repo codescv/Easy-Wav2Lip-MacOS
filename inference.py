@@ -60,6 +60,7 @@ from easy_functions import load_model, g_colab
 
 print("\rimports loaded!     ")
 
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
 gpu_id = 0 if torch.cuda.is_available() else -1
 
@@ -79,7 +80,7 @@ parser.add_argument(
 parser.add_argument(
     "--segmentation_path",
     type=str,
-    default="checkpoints/face_segmentation.pth",
+    default=os.path.join(ROOT_DIR, "checkpoints/face_segmentation.pth"),
     help="Name of saved checkpoint of segmentation network",
     required=False,
 )
@@ -244,10 +245,13 @@ kernel = last_mask = x = y = w = h = None
 
 g_colab = g_colab()
 
+args = None
+preview_window = "Both"
+
 if not g_colab:
   # Load the config file
   config = configparser.ConfigParser()
-  config.read('config.ini')
+  config.read(os.path.join(ROOT_DIR, 'config.ini'))
 
   # Get the value of the "preview_window" variable
   preview_window = config.get('OPTIONS', 'preview_window')
@@ -260,7 +264,7 @@ def do_load(checkpoint_path):
     global model, detector, detector_model
     model = load_model(checkpoint_path)
     detector = RetinaFace(
-        gpu_id=gpu_id, model_path="checkpoints/mobilenet.pth", network="mobilenet"
+        gpu_id=gpu_id, model_path=os.path.join(ROOT_DIR, "checkpoints/mobilenet.pth"), network="mobilenet"
     )
     detector_model = detector.model
 
@@ -579,6 +583,15 @@ def _load(checkpoint_path):
 
 
 def main():
+    global args
+    args = parser.parse_args()
+
+    # Ensure temp and results directories exist
+    os.makedirs("temp", exist_ok=True)
+    os.makedirs(os.path.dirname(args.outfile) or "results", exist_ok=True)
+
+    do_load(args.checkpoint_path)
+
     args.img_size = 96
     frame_number = 11
 
@@ -773,6 +786,4 @@ def main():
         ])
 
 if __name__ == "__main__":
-    args = parser.parse_args()
-    do_load(args.checkpoint_path)
     main()
