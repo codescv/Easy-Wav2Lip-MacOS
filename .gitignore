@@ -1,0 +1,9 @@
+.DS_Store
+__pycache__/
+temp/
+.venv
+installed.txt
+requirements_macos.txt
+requirements_macos_no_dlib.txt
+# Models will be handled by Git LFS
+# checkpoints/
