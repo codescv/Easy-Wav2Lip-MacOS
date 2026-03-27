@@ -5,6 +5,7 @@ import os
 import gdown
 import pickle
 import re
+import sys
 from models import Wav2Lip
 from base64 import b64encode
 from urllib.parse import urlparse
@@ -13,6 +14,39 @@ from IPython.display import HTML, display
 
 device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
 
+# Model URLs - Using the most stable public sources
+MODEL_URLS = {
+    "Wav2Lip.pth": "https://github.com/anothermartz/Easy-Wav2Lip/releases/download/Prerequesits/Wav2Lip.pth",
+    "Wav2Lip_GAN.pth": "https://github.com/anothermartz/Easy-Wav2Lip/releases/download/Prerequesits/Wav2Lip_GAN.pth",
+    "GFPGANv1.4.pth": "https://github.com/anothermartz/Easy-Wav2Lip/releases/download/Prerequesits/GFPGANv1.4.pth",
+    "face_segmentation.pth": "https://github.com/anothermartz/Easy-Wav2Lip/releases/download/Prerequesits/face_segmentation.pth",
+    "mobilenet.pth": "https://huggingface.co/py-feat/retinaface/resolve/main/mobilenet0.25_Final.pth",
+    "shape_predictor_68_face_landmarks_GTX.dat": "https://github.com/anothermartz/Easy-Wav2Lip/releases/download/Prerequesits/shape_predictor_68_face_landmarks_GTX.dat",
+}
+
+# Local Cache Directory for models
+CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "wav2lip")
+
+def ensure_model(filename):
+    """Ensure the model file exists and is not an LFS pointer."""
+    target_path = os.path.join(CACHE_DIR, filename)
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    
+    # Check if exists and is larger than 1MB (avoid LFS pointers)
+    if not os.path.exists(target_path) or os.path.getsize(target_path) < 1024 * 1024:
+        url = MODEL_URLS.get(filename)
+        if not url:
+            raise ValueError(f"Unknown model filename: {filename}")
+            
+        print(f"Model {filename} missing or invalid. Downloading from {url}...")
+        try:
+            # Using curl for better handling of redirects and large files
+            subprocess.check_call(["curl", "-L", url, "-o", target_path])
+        except Exception as e:
+            print(f"Download failed: {e}")
+            raise
+                
+    return target_path
 
 def get_video_details(filename):
     cmd = [
@@ -78,21 +112,35 @@ def format_time(seconds):
 
 
 def _load(checkpoint_path):
-    checkpoint = torch.load(
-        checkpoint_path, map_location=torch.device(device)
-    )
+    # Fix for PyTorch 2.6 default weights_only=True
+    # The global patch in inference.py should handle this, but adding local safety too
+    try:
+        checkpoint = torch.load(
+            checkpoint_path, map_location=torch.device(device), weights_only=False
+        )
+    except TypeError: # Older torch versions
+        checkpoint = torch.load(
+            checkpoint_path, map_location=torch.device(device)
+        )
     return checkpoint
 
 
-def load_model(path):
-    # If results file exists, load it and return
-    working_directory = os.getcwd()
+def load_model(path_or_name):
+    # If it's just a filename, look in CACHE_DIR
+    if not os.path.isabs(path_or_name) and not os.path.exists(path_or_name):
+        filename = os.path.basename(path_or_name)
+        path = ensure_model(filename)
+    else:
+        path = path_or_name
+
     folder, filename_with_extension = os.path.split(path)
     filename, file_type = os.path.splitext(filename_with_extension)
     results_file = os.path.join(folder, filename + ".pk1")
-    if os.path.exists(results_file):
+    
+    if os.path.exists(results_file) and os.path.getsize(results_file) > 1024:
         with open(results_file, "rb") as f:
             return pickle.load(f)
+            
     model = Wav2Lip()
     print("Loading {}".format(path))
     checkpoint = _load(path)
@@ -106,7 +154,6 @@ def load_model(path):
     # Save results to file
     with open(results_file, "wb") as f:
         pickle.dump(model.eval(), f)
-    # os.remove(path)
     return model.eval()
 
 
@@ -135,41 +182,21 @@ def is_url(string):
 
 def load_predictor():
     import dlib
-    checkpoint = os.path.join(
-        "checkpoints", "shape_predictor_68_face_landmarks_GTX.dat"
-    )
+    checkpoint = ensure_model("shape_predictor_68_face_landmarks_GTX.dat")
     predictor = dlib.shape_predictor(checkpoint)
     mouth_detector = dlib.get_frontal_face_detector()
 
     # Serialize the variables
-    with open(os.path.join("checkpoints", "predictor.pkl"), "wb") as f:
+    with open(os.path.join(CACHE_DIR, "predictor.pkl"), "wb") as f:
         pickle.dump(predictor, f)
 
-    with open(os.path.join("checkpoints", "mouth_detector.pkl"), "wb") as f:
+    with open(os.path.join(CACHE_DIR, "mouth_detector.pkl"), "wb") as f:
         pickle.dump(mouth_detector, f)
-
-    # delete the .dat file as it is no longer needed
-    # os.remove(output)
 
 
 def load_file_from_url(url, model_dir=None, progress=True, file_name=None):
-    """Load file form http url, will download models if necessary.
-
-    Ref:https://github.com/1adrianb/face-alignment/blob/master/face_alignment/utils.py
-
-    Args:
-        url (str): URL to be downloaded.
-        model_dir (str): The path to save the downloaded model. Should be a full path. If None, use pytorch hub_dir.
-            Default: None.
-        progress (bool): Whether to show the download progress. Default: True.
-        file_name (str): The downloaded file name. If None, use the file name in the url. Default: None.
-
-    Returns:
-        str: The path to the downloaded file.
-    """
-    if model_dir is None:  # use the pytorch hub_dir
-        hub_dir = get_dir()
-        model_dir = os.path.join(hub_dir, "checkpoints")
+    if model_dir is None:
+        model_dir = CACHE_DIR
 
     os.makedirs(model_dir, exist_ok=True)
 
@@ -178,9 +205,11 @@ def load_file_from_url(url, model_dir=None, progress=True, file_name=None):
     if file_name is not None:
         filename = file_name
     cached_file = os.path.abspath(os.path.join(model_dir, filename))
-    if not os.path.exists(cached_file):
+    
+    # Check if exists and is larger than 1MB
+    if not os.path.exists(cached_file) or os.path.getsize(cached_file) < 1024 * 1024:
         print(f'Downloading: "{url}" to {cached_file}\n')
-        download_url_to_file(url, cached_file, hash_prefix=None, progress=progress)
+        subprocess.check_call(["curl", "-L", url, "-o", cached_file])
     return cached_file
 
 

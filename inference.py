@@ -1,5 +1,23 @@
-print("\rloading torch       ", end="")
+import sys
+import os
+
+# Monkeypatch torchvision before any other imports
+try:
+    import torchvision.transforms.functional as F
+    sys.modules['torchvision.transforms.functional_tensor'] = F
+except ImportError:
+    pass
+
 import torch
+# Global monkeypatch for torch.load to handle PyTorch 2.6+ weights_only=True default
+original_torch_load = torch.load
+def patched_torch_load(*args, **kwargs):
+    if 'weights_only' not in kwargs:
+        kwargs['weights_only'] = False
+    return original_torch_load(*args, **kwargs)
+torch.load = patched_torch_load
+
+print("\rloading torch       ", end="")
 
 print("\rloading numpy       ", end="")
 import numpy as np
@@ -70,7 +88,7 @@ print("\rloading load_sr     ", end="")
 from enhance import load_sr
 
 print("\rloading load_model  ", end="")
-from easy_functions import load_model, g_colab
+from easy_functions import load_model, g_colab, ensure_model, CACHE_DIR
 
 print("\rimports loaded!     ")
 
@@ -106,8 +124,10 @@ model = detector = detector_model = None
 def do_load(checkpoint_path):
     global model, detector, detector_model
     model = load_model(checkpoint_path)
+    
+    mobilenet_path = ensure_model("mobilenet.pth")
     detector = RetinaFace(
-        gpu_id=gpu_id, model_path=os.path.join(ROOT_DIR, "checkpoints/mobilenet.pth"), network="mobilenet"
+        gpu_id=gpu_id, model_path=mobilenet_path, network="mobilenet"
     )
     detector_model = detector.model
 
@@ -436,13 +456,13 @@ def main():
         "--checkpoint_path",
         type=str,
         help="Name of saved checkpoint to load weights from",
-        required=True,
+        default="Wav2Lip_GAN.pth",
     )
 
     parser.add_argument(
         "--segmentation_path",
         type=str,
-        default=os.path.join(ROOT_DIR, "checkpoints/face_segmentation.pth"),
+        default=os.path.join(CACHE_DIR, "face_segmentation.pth"),
         help="Name of saved checkpoint of segmentation network",
         required=False,
     )
@@ -601,21 +621,9 @@ def main():
 
     args = parser.parse_args()
 
-    # Resolve checkpoint_path
-    checkpoint_path = args.checkpoint_path
-    if not os.path.exists(checkpoint_path):
-        # Try relative to ROOT_DIR/checkpoints
-        fallback_path = os.path.join(ROOT_DIR, "checkpoints", os.path.basename(checkpoint_path))
-        if os.path.exists(fallback_path):
-            checkpoint_path = fallback_path
-        else:
-            fallback_path2 = os.path.join(ROOT_DIR, "checkpoints", checkpoint_path)
-            if os.path.exists(fallback_path2):
-                checkpoint_path = fallback_path2
-
-    if not os.path.exists(checkpoint_path):
-        print(f"Error: Checkpoint file not found: {args.checkpoint_path}")
-        sys.exit(1)
+    # Ensure segmentation model exists if needed
+    if not args.no_seg:
+        ensure_model("face_segmentation.pth")
 
     # Ensure temp and results directories exist
     os.makedirs("temp", exist_ok=True)
@@ -633,7 +641,7 @@ def main():
             if config.has_section('OPTIONS'):
                 preview_window = config.get('OPTIONS', 'preview_window')
 
-    do_load(checkpoint_path)
+    do_load(args.checkpoint_path)
 
     args.img_size = 96
 
