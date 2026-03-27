@@ -5,5 +5,9 @@ temp/
 installed.txt
 requirements_macos.txt
 requirements_macos_no_dlib.txt
+last_detected_face.pkl
+*.wav
+*.mp4
+basicsr_fixed
 # Models will be handled by Git LFS
 # checkpoints/

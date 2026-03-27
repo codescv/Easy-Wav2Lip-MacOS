@@ -727,6 +727,28 @@ def main():
         gen = datagen(full_frames.copy(), mel_chunks)
 
     run_params = None
+    if not args.quality == "Fast":
+        print(f"mask size: {args.mask_dilation}, feathering: {args.mask_feathering}")
+        
+        # Load dlib predictor/detector for high quality modes
+        try:
+            import dlib
+            global predictor, mouth_detector
+            checkpoint = os.path.join(ROOT_DIR, "checkpoints", "shape_predictor_68_face_landmarks_GTX.dat")
+            if os.path.exists(checkpoint):
+                predictor = dlib.shape_predictor(checkpoint)
+                mouth_detector = dlib.get_frontal_face_detector()
+            else:
+                print(f"Warning: dlib checkpoint not found at {checkpoint}. Falling back to Fast quality.")
+                args.quality = "Fast"
+        except ImportError:
+            print("Warning: dlib not installed. Falling back to Fast quality.")
+            args.quality = "Fast"
+
+        if not args.quality == "Improved":
+            print("Loading", args.sr_model)
+            run_params = load_sr()
+
     for i, (img_batch, mel_batch, frames, coords) in enumerate(
         tqdm(
             gen,
@@ -736,14 +758,6 @@ def main():
         )
     ):
         if i == 0:
-            if not args.quality == "Fast":
-                print(
-                    f"mask size: {args.mask_dilation}, feathering: {args.mask_feathering}"
-                )
-                if not args.quality == "Improved":
-                    print("Loading", args.sr_model)
-                    run_params = load_sr()
-
             print("Starting...")
             frame_h, frame_w = full_frames[0].shape[:-1]
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
