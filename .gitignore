@@ -11,3 +11,4 @@ last_detected_face.pkl
 basicsr_fixed
 # Models will be handled by Git LFS
 # checkpoints/
+gfpgan/
