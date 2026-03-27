@@ -17,6 +17,36 @@ def patched_torch_load(*args, **kwargs):
     return original_torch_load(*args, **kwargs)
 torch.load = patched_torch_load
 
+# Monkeypatch facexlib to use CACHE_DIR for downloads instead of current directory
+try:
+    import facexlib.utils
+    
+    # Define CACHE_DIR here to avoid circular imports this early
+    _CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "wav2lip")
+    
+    original_facexlib_load = facexlib.utils.load_file_from_url
+    
+    def patched_facexlib_load(url, **kwargs):
+        # Redirect if it's pointing to local 'weights' or not specified
+        model_dir = kwargs.get('model_dir')
+        save_dir = kwargs.get('save_dir')
+        
+        # If neither is set, we use CACHE_DIR
+        if model_dir is None and save_dir is None:
+            kwargs['model_dir'] = _CACHE_DIR
+        else:
+            # If either is set to some local 'weights' path, redirect it
+            if model_dir is not None and ('weights' in str(model_dir) or str(model_dir) == 'facexlib/weights' or str(model_dir) == 'gfpgan/weights'):
+                kwargs['model_dir'] = _CACHE_DIR
+            if save_dir is not None and ('weights' in str(save_dir) or str(save_dir) == 'facexlib/weights' or str(save_dir) == 'gfpgan/weights'):
+                kwargs['save_dir'] = _CACHE_DIR
+                
+        return original_facexlib_load(url, **kwargs)
+        
+    facexlib.utils.load_file_from_url = patched_facexlib_load
+except ImportError:
+    pass
+
 print("\rloading torch       ", end="")
 import torch
 
