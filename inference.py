@@ -448,6 +448,10 @@ def _load(checkpoint_path):
 def main():
     global args, preview_window
     
+    # Clean up last face detection data to avoid conflicts between different videos
+    if os.path.exists("last_detected_face.pkl"):
+        os.remove("last_detected_face.pkl")
+    
     parser = argparse.ArgumentParser(
         description="Inference code to lip-sync videos in the wild using Wav2Lip models"
     )
