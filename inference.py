@@ -18,6 +18,7 @@ def patched_torch_load(*args, **kwargs):
 torch.load = patched_torch_load
 
 print("\rloading torch       ", end="")
+import torch
 
 print("\rloading numpy       ", end="")
 import numpy as np
@@ -87,7 +88,6 @@ from enhance import upscale
 print("\rloading load_sr     ", end="")
 from enhance import load_sr
 
-print("\rloading load_model  ", end="")
 from easy_functions import load_model, g_colab, ensure_model, CACHE_DIR
 
 print("\rimports loaded!     ")
@@ -141,187 +141,77 @@ def face_rect(images):
         for faces in all_faces:
             if faces:
                 box, landmarks, score = faces[0]
-                prev_ret = tuple(map(int, box))
+                prev_ret = (tuple(map(int, box)), landmarks)
             yield prev_ret
 
-def create_tracked_mask(img, original_img):
-    global kernel, last_mask, x, y, w, h  # Add last_mask to global variables
+def create_mask_from_landmarks(img, original_img, landmarks, coords, debug_idx=None):
+    """
+    Create a mouth mask using 5-point landmarks from RetinaFace.
+    Landmarks indices: 0,1: eyes; 2: nose; 3,4: mouth corners.
+    """
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    orig_rgb = cv2.cvtColor(original_img, cv2.COLOR_BGR2RGB)
+    h_img, w_img, _ = img.shape
+    y1, y2, x1, x2 = coords
 
-    # Convert color space from BGR to RGB if necessary
-    cv2.cvtColor(img, cv2.COLOR_BGR2RGB, img)
-    cv2.cvtColor(original_img, cv2.COLOR_BGR2RGB, original_img)
-
-    # Detect face
-    faces = mouth_detector(img)
-    if len(faces) == 0:
-        if last_mask is not None:
-            last_mask = cv2.resize(last_mask, (img.shape[1], img.shape[0]))
-            mask = last_mask  # use the last successful mask
-        else:
-            cv2.cvtColor(img, cv2.COLOR_BGR2RGB, img)
-            return img, None
-    else:
-        face = faces[0]
-        shape = predictor(img, face)
-
-        # Get points for mouth
-        mouth_points = np.array(
-            [[shape.part(i).x, shape.part(i).y] for i in range(48, 68)]
-        )
-
-        # Calculate bounding box dimensions
-        x, y, w, h = cv2.boundingRect(mouth_points)
-
-        # Set kernel size as a fraction of bounding box size
-        kernel_size = int(max(w, h) * args.mask_dilation)
-        # if kernel_size % 2 == 0:  # Ensure kernel size is odd
-        # kernel_size += 1
-
-        # Create kernel
-        kernel = np.ones((kernel_size, kernel_size), np.uint8)
-
-        # Create binary mask for mouth
-        mask = np.zeros(img.shape[:2], dtype=np.uint8)
+    if landmarks is not None:
+        # Convert global landmarks to local face-crop coordinates
+        # landmarks are absolute [x, y], coords are [y1, y2, x1, x2]
+        m_left_global = landmarks[3]
+        m_right_global = landmarks[4]
+        
+        m_left = np.array([m_left_global[0] - x1, m_left_global[1] - y1])
+        m_right = np.array([m_right_global[0] - x1, m_right_global[1] - y1])
+        
+        # Estimate mouth center and width in local space
+        m_center = (m_left + m_right) / 2.0
+        m_width = np.linalg.norm(m_left - m_right)
+        
+        # Define mouth area polygon
+        p1 = m_center + np.array([-0.7 * m_width, -0.3 * m_width])
+        p2 = m_center + np.array([0.7 * m_width, -0.3 * m_width])
+        p3 = m_center + np.array([0.7 * m_width, 0.6 * m_width])
+        p4 = m_center + np.array([-0.7 * m_width, 0.6 * m_width])
+        
+        mouth_points = np.array([p1, p2, p3, p4], dtype=np.int32)
+        
+        # Create binary mask
+        mask = np.zeros((h_img, w_img), dtype=np.uint8)
         cv2.fillConvexPoly(mask, mouth_points, 255)
-
-        last_mask = mask  # Update last_mask with the new mask
-
-    # Dilate the mask
-    dilated_mask = cv2.dilate(mask, kernel)
-
-    # Calculate distance transform of dilated mask
-    dist_transform = cv2.distanceTransform(dilated_mask, cv2.DIST_L2, 5)
-
-    # Normalize distance transform
-    cv2.normalize(dist_transform, dist_transform, 0, 255, cv2.NORM_MINMAX)
-
-    # Convert normalized distance transform to binary mask and convert it to uint8
-    _, masked_diff = cv2.threshold(dist_transform, 50, 255, cv2.THRESH_BINARY)
-    masked_diff = masked_diff.astype(np.uint8)
-
-    # make sure blur is an odd number
-    blur = args.mask_feathering
-    if blur % 2 == 0:
-        blur += 1
-    # Set blur size as a fraction of bounding box size
-    blur = int(max(w, h) * blur)  # 10% of bounding box size
-    if blur % 2 == 0:  # Ensure blur size is odd
-        blur += 1
-    masked_diff = cv2.GaussianBlur(masked_diff, (blur, blur), 0)
-
-    # Convert numpy arrays to PIL Images
-    input1 = Image.fromarray(img)
-    input2 = Image.fromarray(original_img)
-
-    # Convert mask to single channel where pixel values are from the alpha channel of the current mask
-    mask = Image.fromarray(masked_diff)
-
-    # Ensure images are the same size
-    assert input1.size == input2.size == mask.size
-
-    # Paste input1 onto input2 using the mask
-    input2.paste(input1, (0, 0), mask)
-
-    # Convert the final PIL Image back to a numpy array
-    input2 = np.array(input2)
-
-    # input2 = cv2.cvtColor(input2, cv2.COLOR_BGR2RGB)
-    cv2.cvtColor(input2, cv2.COLOR_BGR2RGB, input2)
-
-    return input2, mask
-
-
-def create_mask(img, original_img):
-    global kernel, last_mask, x, y, w, h # Add last_mask to global variables
-
-    # Convert color space from BGR to RGB if necessary
-    cv2.cvtColor(img, cv2.COLOR_BGR2RGB, img)
-    cv2.cvtColor(original_img, cv2.COLOR_BGR2RGB, original_img)
-
-    if last_mask is not None:
-        last_mask = np.array(last_mask)  # Convert PIL Image to numpy array
-        last_mask = cv2.resize(last_mask, (img.shape[1], img.shape[0]))
-        mask = last_mask  # use the last successful mask
-        mask = Image.fromarray(mask)
-
-    else:
-        # Detect face
-        faces = mouth_detector(img)
-        if len(faces) == 0:
-            cv2.cvtColor(img, cv2.COLOR_BGR2RGB, img)
-            return img, None
+        
+        # Feathering
+        blur_size = int(m_width * args.mask_feathering / 100.0)
+        if blur_size % 2 == 0: blur_size += 1
+        if blur_size > 0:
+            mask_blurred = cv2.GaussianBlur(mask, (blur_size, blur_size), 0)
         else:
-            face = faces[0]
-            shape = predictor(img, face)
+            mask_blurred = mask
+            
+        mask_pil = Image.fromarray(mask_blurred)
 
-            # Get points for mouth
-            mouth_points = np.array(
-                [[shape.part(i).x, shape.part(i).y] for i in range(48, 68)]
-            )
+        # Debug visualization
+        if debug_idx is not None and debug_idx < 5:
+            debug_img = original_img.copy()
+            # Draw landmarks
+            for pt in [m_left, m_right]:
+                cv2.circle(debug_img, (int(pt[0]), int(pt[1])), 3, (0, 255, 0), -1)
+            # Draw mouth box
+            cv2.polylines(debug_img, [mouth_points], True, (255, 0, 0), 2)
+            os.makedirs("temp/debug_frames", exist_ok=True)
+            cv2.imwrite(f"temp/debug_frames/frame_{debug_idx}_mask.jpg", debug_img)
+            cv2.imwrite(f"temp/debug_frames/frame_{debug_idx}_raw_mask.jpg", mask)
+    else:
+        # Fallback
+        mask = np.zeros((h_img, w_img), dtype=np.uint8)
+        mask[h_img//2:, :] = 255
+        mask_pil = Image.fromarray(mask)
 
-            # Calculate bounding box dimensions
-            x, y, w, h = cv2.boundingRect(mouth_points)
-
-            # Set kernel size as a fraction of bounding box size
-            kernel_size = int(max(w, h) * args.mask_dilation)
-            # if kernel_size % 2 == 0:  # Ensure kernel size is odd
-            # kernel_size += 1
-
-            # Create kernel
-            kernel = np.ones((kernel_size, kernel_size), np.uint8)
-
-            # Create binary mask for mouth
-            mask = np.zeros(img.shape[:2], dtype=np.uint8)
-            cv2.fillConvexPoly(mask, mouth_points, 255)
-
-            # Dilate the mask
-            dilated_mask = cv2.dilate(mask, kernel)
-
-            # Calculate distance transform of dilated mask
-            dist_transform = cv2.distanceTransform(dilated_mask, cv2.DIST_L2, 5)
-
-            # Normalize distance transform
-            cv2.normalize(dist_transform, dist_transform, 0, 255, cv2.NORM_MINMAX)
-
-            # Convert normalized distance transform to binary mask and convert it to uint8
-            _, masked_diff = cv2.threshold(dist_transform, 50, 255, cv2.THRESH_BINARY)
-            masked_diff = masked_diff.astype(np.uint8)
-
-            if not args.mask_feathering == 0:
-                blur = args.mask_feathering
-                # Set blur size as a fraction of bounding box size
-                blur = int(max(w, h) * blur)  # 10% of bounding box size
-                if blur % 2 == 0:  # Ensure blur size is odd
-                    blur += 1
-                masked_diff = cv2.GaussianBlur(masked_diff, (blur, blur), 0)
-
-            # Convert mask to single channel where pixel values are from the alpha channel of the current mask
-            mask = Image.fromarray(masked_diff)
-
-            last_mask = mask  # Update last_mask with the final mask after dilation and feathering
-
-    # Convert numpy arrays to PIL Images
-    input1 = Image.fromarray(img)
-    input2 = Image.fromarray(original_img)
-
-    # Resize mask to match image size
-    # mask = Image.fromarray(mask)
-    mask = mask.resize(input1.size)
-
-    # Ensure images are the same size
-    assert input1.size == input2.size == mask.size
-
-    # Paste input1 onto input2 using the mask
-    input2.paste(input1, (0, 0), mask)
-
-    # Convert the final PIL Image back to a numpy array
-    input2 = np.array(input2)
-
-    # input2 = cv2.cvtColor(input2, cv2.COLOR_BGR2RGB)
-    cv2.cvtColor(input2, cv2.COLOR_BGR2RGB, input2)
-
-    return input2, mask
-
+    input1 = Image.fromarray(img_rgb)
+    input2 = Image.fromarray(orig_rgb)
+    input2.paste(input1, (0, 0), mask_pil)
+    
+    res = cv2.cvtColor(np.array(input2), cv2.COLOR_RGB2BGR)
+    return res, mask_pil
 
 def get_smoothened_boxes(boxes, T):
     for i in range(len(boxes)):
@@ -343,13 +233,13 @@ def face_detect(images, results_file="last_detected_face.pkl"):
     pady1, pady2, padx1, padx2 = args.pads
     
     tqdm_partial = partial(tqdm, position=0, leave=True)
-    for image, (rect) in tqdm_partial(
+    for image, (rect_data) in tqdm_partial(
         zip(images, face_rect(images)),
         total=len(images),
         desc="detecting face in every frame",
         ncols=100,
     ):
-        if rect is None:
+        if rect_data is None:
             cv2.imwrite(
                 "temp/faulty_frame.jpg", image
             )  # check this frame where the face was not detected.
@@ -357,31 +247,34 @@ def face_detect(images, results_file="last_detected_face.pkl"):
                 "Face not detected! Ensure the video contains a face in all the frames."
             )
 
+        rect, landmarks = rect_data
         y1 = max(0, rect[1] - pady1)
         y2 = min(image.shape[0], rect[3] + pady2)
         x1 = max(0, rect[0] - padx1)
         x2 = min(image.shape[1], rect[2] + padx2)
 
-        results.append([x1, y1, x2, y2])
+        results.append({"box": [x1, y1, x2, y2], "landmarks": landmarks})
 
 
-    boxes = np.array(results)
+    boxes_list = [r["box"] for r in results]
+    boxes = np.array(boxes_list)
     if str(args.nosmooth) == "False":
         boxes = get_smoothened_boxes(boxes, T=5)
-    results = [
-        [image[y1:y2, x1:x2], (y1, y2, x1, x2)]
-        for image, (x1, y1, x2, y2) in zip(images, boxes)
-    ]
+    
+    final_results = []
+    for i, image in enumerate(images):
+        x1, y1, x2, y2 = boxes[i]
+        final_results.append([image[int(y1):int(y2), int(x1):int(x2)], (int(y1), int(y2), int(x1), int(x2)), results[i]["landmarks"]])
 
     # Save results to file
     with open(results_file, "wb") as f:
-        pickle.dump(results, f)
+        pickle.dump(final_results, f)
 
-    return results
+    return final_results
 
 
 def datagen(frames, mels):
-    img_batch, mel_batch, frame_batch, coords_batch = [], [], [], []
+    img_batch, mel_batch, frame_batch, coords_batch, landmarks_batch = [], [], [], [], []
     print("\r" + " " * 100, end="\r")
     if args.box[0] == -1:
         if not args.static:
@@ -391,12 +284,12 @@ def datagen(frames, mels):
     else:
         print("Using the specified bounding box instead of face detection...")
         y1, y2, x1, x2 = args.box
-        face_det_results = [[f[y1:y2, x1:x2], (y1, y2, x1, x2)] for f in frames]
+        face_det_results = [[f[y1:y2, x1:x2], (y1, y2, x1, x2), None] for f in frames]
 
     for i, m in enumerate(mels):
         idx = 0 if args.static else i % len(frames)
         frame_to_save = frames[idx].copy()
-        face, coords = face_det_results[idx].copy()
+        face, coords, landmarks = face_det_results[idx]
 
         face = cv2.resize(face, (args.img_size, args.img_size))
 
@@ -404,6 +297,7 @@ def datagen(frames, mels):
         mel_batch.append(m)
         frame_batch.append(frame_to_save)
         coords_batch.append(coords)
+        landmarks_batch.append(landmarks)
 
         if len(img_batch) >= args.wav2lip_batch_size:
             img_batch, mel_batch = np.asarray(img_batch), np.asarray(mel_batch)
@@ -416,8 +310,8 @@ def datagen(frames, mels):
                 mel_batch, [len(mel_batch), mel_batch.shape[1], mel_batch.shape[2], 1]
             )
 
-            yield img_batch, mel_batch, frame_batch, coords_batch
-            img_batch, mel_batch, frame_batch, coords_batch = [], [], [], []
+            yield img_batch, mel_batch, frame_batch, coords_batch, landmarks_batch
+            img_batch, mel_batch, frame_batch, coords_batch, landmarks_batch = [], [], [], [], []
 
     if len(img_batch) > 0:
         img_batch, mel_batch = np.asarray(img_batch), np.asarray(mel_batch)
@@ -430,20 +324,10 @@ def datagen(frames, mels):
             mel_batch, [len(mel_batch), mel_batch.shape[1], mel_batch.shape[2], 1]
         )
 
-        yield img_batch, mel_batch, frame_batch, coords_batch
+        yield img_batch, mel_batch, frame_batch, coords_batch, landmarks_batch
 
 
 mel_step_size = 16
-
-def _load(checkpoint_path):
-    if device != "cpu":
-        checkpoint = torch.load(checkpoint_path)
-    else:
-        checkpoint = torch.load(
-            checkpoint_path, map_location=lambda storage, loc: storage
-        )
-    return checkpoint
-
 
 def main():
     global args, preview_window
@@ -740,28 +624,11 @@ def main():
 
     run_params = None
     if not args.quality == "Fast":
-        print(f"mask size: {args.mask_dilation}, feathering: {args.mask_feathering}")
-        
-        # Load dlib predictor/detector for high quality modes
-        try:
-            import dlib
-            global predictor, mouth_detector
-            checkpoint = os.path.join(ROOT_DIR, "checkpoints", "shape_predictor_68_face_landmarks_GTX.dat")
-            if os.path.exists(checkpoint):
-                predictor = dlib.shape_predictor(checkpoint)
-                mouth_detector = dlib.get_frontal_face_detector()
-            else:
-                print(f"Warning: dlib checkpoint not found at {checkpoint}. Falling back to Fast quality.")
-                args.quality = "Fast"
-        except ImportError:
-            print("Warning: dlib not installed. Falling back to Fast quality.")
-            args.quality = "Fast"
-
         if not args.quality == "Improved":
             print("Loading", args.sr_model)
             run_params = load_sr()
 
-    for i, (img_batch, mel_batch, frames, coords) in enumerate(
+    for i, (img_batch, mel_batch, frames, coords, landmarks_batch) in enumerate(
         tqdm(
             gen,
             total=int(np.ceil(float(len(mel_chunks)) / batch_size)),
@@ -783,14 +650,10 @@ def main():
 
         pred = pred.cpu().numpy().transpose(0, 2, 3, 1) * 255.0
 
-        for p, f, c in zip(pred, frames, coords):
-            # cv2.imwrite('temp/f.jpg', f)
-
+        for p, f, c, l in zip(pred, frames, coords, landmarks_batch):
             y1, y2, x1, x2 = c
 
-            if (
-                str(args.debug_mask) == "True"
-            ):  # makes the background black & white so you can see the mask better
+            if str(args.debug_mask) == "True":
                 f = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
                 f = cv2.cvtColor(f, cv2.COLOR_GRAY2BGR)
 
@@ -801,39 +664,19 @@ def main():
                 p = upscale(p, run_params)
 
             if args.quality in ["Enhanced", "Improved"]:
-                if str(args.mouth_tracking) == "True":
-                    p, last_mask = create_tracked_mask(p, cf)
-                else:
-                    p, last_mask = create_mask(p, cf)
+                # Use RetinaFace 5-point landmarks for masking, with coordinate correction
+                p, last_mask = create_mask_from_landmarks(p, cf, l, c, debug_idx=i)
 
             f[y1:y2, x1:x2] = p
 
             if not g_colab_val:
-                # Display the frame
-                if preview_window == "Face":
-                    cv2.imshow("face preview - press Q to abort", p)
-                elif preview_window == "Full":
-                    cv2.imshow("full preview - press Q to abort", f)
-                elif preview_window == "Both":
-                    cv2.imshow("face preview - press Q to abort", p)
-                    cv2.imshow("full preview - press Q to abort", f)
-
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
-                    exit()  # Exit the loop when 'Q' is pressed
+                #cv2.imshow("face preview", p)
+                pass
 
             if str(args.preview_settings) == "True":
                 cv2.imwrite("temp/preview.jpg", f)
-                if not g_colab_val:
-                    cv2.imshow("preview - press Q to close", f)
-                    if cv2.waitKey(-1) & 0xFF == ord('q'):
-                        exit()  # Exit the loop when 'Q' is pressed
-
             else:
                 out.write(f)
-
-    # Close the window(s) when done
-    cv2.destroyAllWindows()
 
     out.release()
 

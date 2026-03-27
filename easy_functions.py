@@ -21,7 +21,6 @@ MODEL_URLS = {
     "GFPGANv1.4.pth": "https://github.com/anothermartz/Easy-Wav2Lip/releases/download/Prerequesits/GFPGANv1.4.pth",
     "face_segmentation.pth": "https://github.com/anothermartz/Easy-Wav2Lip/releases/download/Prerequesits/face_segmentation.pth",
     "mobilenet.pth": "https://huggingface.co/py-feat/retinaface/resolve/main/mobilenet0.25_Final.pth",
-    "shape_predictor_68_face_landmarks_GTX.dat": "https://github.com/anothermartz/Easy-Wav2Lip/releases/download/Prerequesits/shape_predictor_68_face_landmarks_GTX.dat",
 }
 
 # Local Cache Directory for models
@@ -113,7 +112,6 @@ def format_time(seconds):
 
 def _load(checkpoint_path):
     # Fix for PyTorch 2.6 default weights_only=True
-    # The global patch in inference.py should handle this, but adding local safety too
     try:
         checkpoint = torch.load(
             checkpoint_path, map_location=torch.device(device), weights_only=False
@@ -178,20 +176,6 @@ def get_input_length(filename):
 def is_url(string):
     url_regex = re.compile(r"^(https?|ftp)://[^\s/$.?#].[^\s]*$")
     return bool(url_regex.match(string))
-
-
-def load_predictor():
-    import dlib
-    checkpoint = ensure_model("shape_predictor_68_face_landmarks_GTX.dat")
-    predictor = dlib.shape_predictor(checkpoint)
-    mouth_detector = dlib.get_frontal_face_detector()
-
-    # Serialize the variables
-    with open(os.path.join(CACHE_DIR, "predictor.pkl"), "wb") as f:
-        pickle.dump(predictor, f)
-
-    with open(os.path.join(CACHE_DIR, "mouth_detector.pkl"), "wb") as f:
-        pickle.dump(mouth_detector, f)
 
 
 def load_file_from_url(url, model_dir=None, progress=True, file_name=None):
