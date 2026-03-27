@@ -64,23 +64,8 @@ wheels = [
 [[package]]
 name = "basicsr"
 version = "1.4.2"
-source = { directory = "basicsr_fixed" }
+source = { git = "https://github.com/codescv/basicsr.git#a13eca0c6e5653fb0b8f18fbbc88698fe284ea0d" }
 dependencies = [
-    { name = "addict" },
-    { name = "future" },
-    { name = "lmdb" },
-    { name = "numpy" },
-    { name = "opencv-python" },
-    { name = "pillow" },
-    { name = "pyyaml" },
-    { name = "requests" },
-    { name = "scikit-image" },
-    { name = "scipy" },
-    { name = "tqdm" },
-]
-
-[package.metadata]
-requires-dist = [
     { name = "addict" },
     { name = "future" },
     { name = "lmdb" },
@@ -320,7 +305,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "basicsr", directory = "basicsr_fixed" },
+    { name = "basicsr", git = "https://github.com/codescv/basicsr.git" },
     { name = "batch-face", specifier = "==1.4.0" },
     { name = "facexlib", specifier = "==0.3.0" },
     { name = "gdown", specifier = "==4.7.1" },
