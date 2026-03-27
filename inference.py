@@ -47,6 +47,46 @@ try:
 except ImportError:
     pass
 
+# Monkeypatch basicsr to use CACHE_DIR for downloads instead of current directory
+try:
+    import basicsr.utils.download_util
+    
+    original_basicsr_load = basicsr.utils.download_util.load_file_from_url
+    
+    def patched_basicsr_load(url, **kwargs):
+        model_dir = kwargs.get('model_dir')
+        save_dir = kwargs.get('save_dir')
+        
+        if model_dir is None and save_dir is None:
+            kwargs['model_dir'] = _CACHE_DIR
+        else:
+            if model_dir is not None and ('weights' in str(model_dir) or str(model_dir) == 'facexlib/weights' or str(model_dir) == 'gfpgan/weights'):
+                kwargs['model_dir'] = _CACHE_DIR
+            if save_dir is not None and ('weights' in str(save_dir) or str(save_dir) == 'facexlib/weights' or str(save_dir) == 'gfpgan/weights'):
+                kwargs['save_dir'] = _CACHE_DIR
+                
+        return original_basicsr_load(url, **kwargs)
+        
+    basicsr.utils.download_util.load_file_from_url = patched_basicsr_load
+except ImportError:
+    pass
+
+# Monkeypatch facexlib FaceRestoreHelper to use CACHE_DIR for downloads instead of current directory
+try:
+    import facexlib.utils.face_restoration_helper
+    
+    original_helper_init = facexlib.utils.face_restoration_helper.FaceRestoreHelper.__init__
+    
+    def patched_helper_init(self, *args, **kwargs):
+        if 'model_rootpath' in kwargs and (kwargs['model_rootpath'] == 'gfpgan/weights' or 'facexlib' in kwargs['model_rootpath']):
+            kwargs['model_rootpath'] = _CACHE_DIR
+            
+        return original_helper_init(self, *args, **kwargs)
+        
+    facexlib.utils.face_restoration_helper.FaceRestoreHelper.__init__ = patched_helper_init
+except ImportError:
+    pass
+
 print("\rloading torch       ", end="")
 import torch
 
